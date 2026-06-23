@@ -1,0 +1,882 @@
+//@version=6
+strategy("OMNIA QUANTUM •  CORE", overlay=true, initial_capital=500, currency=currency.USD, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=15, commission_type=strategy.commission.percent, commission_value=0.06, slippage=2, calc_on_every_tick=true)
+
+///////////////////////////////////////////////////////////////////////////////
+// 0) BACKTEST DATE RANGE
+///////////////////////////////////////////////////////////////////////////////
+startDay = input.int(1, "Start Day", minval=1, maxval=31, group="📅 Backtest Period")
+startMonth = input.int(1, "Start Month", minval=1, maxval=12, group="📅 Backtest Period")
+startYear = input.int(2020, "Start Year", minval=2000, group="📅 Backtest Period")
+endDay = input.int(31, "End Day", minval=1, maxval=31, group="📅 Backtest Period")
+endMonth = input.int(12, "End Month", minval=1, maxval=12, group="📅 Backtest Period")
+endYear = input.int(2026, "End Year", minval=2000, group="📅 Backtest Period")
+startTime = timestamp(startYear, startMonth, startDay, 0, 0)
+endTime = timestamp(endYear, endMonth, endDay, 23, 59)
+inDateRange = time >= startTime and time <= endTime
+
+///////////////////////////////////////////////////////////////////////////////
+// 1) WUNDERTRADING ALERTS
+///////////////////////////////////////////////////////////////////////////////
+enterLongMsg = input.string("ENTER-LONG_Bitget_BTCUSDT_OMNIA", "Enter Long Alert", group="🔔 WunderTrading Alerts")
+exitLongMsg = input.string("EXIT-LONG_Bitget_BTCUSDT_OMNIA", "Exit Long Alert", group="🔔 WunderTrading Alerts")
+enterShortMsg = input.string("ENTER-SHORT_Bitget_BTCUSDT_OMNIA", "Enter Short Alert", group="🔔 WunderTrading Alerts")
+exitShortMsg = input.string("EXIT-SHORT_Bitget_BTCUSDT_OMNIA", "Exit Short Alert", group="🔔 WunderTrading Alerts")
+
+///////////////////////////////////////////////////////////////////////////////
+// 2) TECHNICAL PARAMETERS
+///////////////////////////////////////////////////////////////////////////////
+emaHTF = input.int(100, "HTF EMA Length (4H)", minval=1, group="📊 Trend Filter")
+swingLen = input.int(7, "Swing Structure Length", minval=3, group="📊 Trend Filter")
+diLen = input.int(14, "DI Length (ADX)", minval=1, group="📊 Trend Filter")
+adxSmooth = input.int(14, "ADX Smoothing", minval=1, group="📊 Trend Filter")
+adxMin = input.float(20.0, "ADX Minimum", minval=0, step=0.5, group="📊 Trend Filter")
+volLen = input.int(20, "Volume SMA Length", minval=1, group="📊 Trend Filter")
+volMult = input.float(1.1, "Volume Multiplier", minval=0.1, step=0.1, group="📊 Trend Filter")
+useRSI = input.bool(true, "Enable RSI Filter", group="📊 Trend Filter")
+rsiLen = input.int(14, "RSI Length", minval=1, group="📊 Trend Filter")
+rsiOverbought = input.float(75, "RSI Overbought Level", minval=50, maxval=100, group="📊 Trend Filter")
+rsiOversold = input.float(25, "RSI Oversold Level", minval=0, maxval=50, group="📊 Trend Filter")
+useEMAFast = input.bool(true, "Enable Fast EMA Crossover", group="📊 Trend Filter")
+emaFastLen = input.int(20, "Fast EMA Length", minval=1, group="📊 Trend Filter")
+emaSlowLen = input.int(50, "Slow EMA Length", minval=1, group="📊 Trend Filter")
+
+///////////////////////////////////////////////////////////////////////////////
+// 3) 🚀 AGGRESSIVE TRAILING LADDER
+///////////////////////////////////////////////////////////////////////////////
+atrLen = input.int(14, "ATR Length", minval=1, group="🚀 Aggressive Trailing")
+atrSLMult = input.float(2.0, "Initial SL ATR Multiplier", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+level1_r = input.float(1.5, "Level 1 (R) → SL to BE", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+level2_r = input.float(3.0, "Level 2 (R) → SL to Level 1", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+level3_r = input.float(5.0, "Level 3 (R) → SL to Level 2", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+level4_r = input.float(7.0, "Level 4 (R) → SL to Level 3", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+pullbackPct = input.float(2.0, "Pullback % from High", minval=0.1, step=0.1, group="🚀 Aggressive Trailing")
+pullbackBars = input.int(3, "Pullback Confirmation Bars", minval=1, group="🚀 Aggressive Trailing")
+useADXExit = input.bool(true, "Exit on Weak ADX", group="🚀 Aggressive Trailing")
+adxExitThreshold = input.float(18.0, "ADX Exit Threshold", minval=0, step=0.5, group="🚀 Aggressive Trailing")
+
+///////////////////////////////////////////////////////////////////////////////
+// 4) VISUAL SETTINGS - CHART
+///////////////////////////////////////////////////////////////////////////////
+showEMA = input.bool(true, "Show HTF EMA", group="🎨 Chart Display")
+emaColor = input.color(color.new(#2962FF, 0), "HTF EMA Color", group="🎨 Chart Display")
+emaWidth = input.int(2, "HTF EMA Width", minval=1, maxval=5, group="🎨 Chart Display")
+showSwing = input.bool(true, "Show Swing Levels", group="🎨 Chart Display")
+swingColor = input.color(color.new(#FF6D00, 50), "Swing Level Color", group="🎨 Chart Display")
+showFastEMA = input.bool(true, "Show Fast/Slow EMA", group="🎨 Chart Display")
+fastEMAColor = input.color(color.new(#00BCD4, 50), "Fast EMA Color", group="🎨 Chart Display")
+slowEMAColor = input.color(color.new(#FF9800, 50), "Slow EMA Color", group="🎨 Chart Display")
+
+///////////////////////////////////////////////////////////////////////////////
+// 5) VISUAL SETTINGS - LABELS
+///////////////////////////////////////////////////////////////////////////////
+showLabels = input.bool(true, "Show Entry/Exit Labels", group="🏷️ Labels")
+labelSize = input.string("small", "Label Size", options=["tiny", "small", "normal", "large"], group="🏷️ Labels")
+buyLabelColor = input.color(color.new(#089981, 0), "BUY Label Color", group="🏷️ Labels")
+buyLabelText = input.color(color.white, "BUY Text Color", group="🏷️ Labels")
+sellLabelColor = input.color(color.new(#F23645, 0), "SELL Label Color", group="🏷️ Labels")
+sellLabelText = input.color(color.white, "SELL Text Color", group="🏷️ Labels")
+winLabelColor = input.color(color.new(#089981, 0), "WIN Label Color", group="🏷️ Labels")
+winLabelText = input.color(color.white, "WIN Text Color", group="🏷️ Labels")
+lossLabelColor = input.color(color.new(#F23645, 0), "LOSS Label Color", group="🏷️ Labels")
+lossLabelText = input.color(color.white, "LOSS Text Color", group="🏷️ Labels")
+showBackgroundBox = input.bool(true, "Show Trade Background Box", group="🏷️ Labels")
+winBoxColor = input.color(color.new(#089981, 90), "WIN Background Color", group="🏷️ Labels")
+lossBoxColor = input.color(color.new(#F23645, 90), "LOSS Background Color", group="🏷️ Labels")
+
+///////////////////////////////////////////////////////////////////////////////
+// 5B) LABEL EDITING (POSITION + CONNECTOR LINE) - PER TYPE
+///////////////////////////////////////////////////////////////////////////////
+f_priceFromAnchor(_anchor, _autoPrice) =>
+    _anchor == "auto" ? _autoPrice :
+     _anchor == "open" ? open :
+     _anchor == "high" ? high :
+     _anchor == "low" ? low :
+     _anchor == "close" ? close :
+     _anchor == "hl2" ? hl2 :
+     _anchor == "hlc3" ? hlc3 :
+     _anchor == "ohlc4" ? ohlc4 :
+     _autoPrice
+
+f_lineStyle(_s) =>
+    _s == "dashed" ? line.style_dashed : _s == "dotted" ? line.style_dotted : line.style_solid
+
+// BUY
+buyEditEnable = input.bool(true, "Enable BUY Edit", group="🏷️ Labels • BUY EDIT")
+buyXOffset = input.int(0, "BUY X Offset (bars)", minval=-500, maxval=500, group="🏷️ Labels • BUY EDIT")
+buyYOffsetAtr = input.float(0.0, "BUY Y Offset (ATR)", step=0.1, group="🏷️ Labels • BUY EDIT")
+buyAnchor = input.string("auto", "BUY Label Anchor", options=["auto","open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • BUY EDIT")
+buyShowLine = input.bool(true, "BUY Connector Line", group="🏷️ Labels • BUY EDIT")
+buyLineColor = input.color(color.new(#089981, 0), "BUY Line Color", group="🏷️ Labels • BUY EDIT")
+buyLineWidth = input.int(1, "BUY Line Width", minval=1, maxval=5, group="🏷️ Labels • BUY EDIT")
+buyLineStyle = input.string("solid", "BUY Line Style", options=["solid","dashed","dotted"], group="🏷️ Labels • BUY EDIT")
+buyCandlePoint = input.string("low", "BUY Candle Point", options=["open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • BUY EDIT")
+
+// SELL
+sellEditEnable = input.bool(true, "Enable SELL Edit", group="🏷️ Labels • SELL EDIT")
+sellXOffset = input.int(0, "SELL X Offset (bars)", minval=-500, maxval=500, group="🏷️ Labels • SELL EDIT")
+sellYOffsetAtr = input.float(0.0, "SELL Y Offset (ATR)", step=0.1, group="🏷️ Labels • SELL EDIT")
+sellAnchor = input.string("auto", "SELL Label Anchor", options=["auto","open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • SELL EDIT")
+sellShowLine = input.bool(true, "SELL Connector Line", group="🏷️ Labels • SELL EDIT")
+sellLineColor = input.color(color.new(#F23645, 0), "SELL Line Color", group="🏷️ Labels • SELL EDIT")
+sellLineWidth = input.int(1, "SELL Line Width", minval=1, maxval=5, group="🏷️ Labels • SELL EDIT")
+sellLineStyle = input.string("solid", "SELL Line Style", options=["solid","dashed","dotted"], group="🏷️ Labels • SELL EDIT")
+sellCandlePoint = input.string("high", "SELL Candle Point", options=["open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • SELL EDIT")
+
+// WIN
+winEditEnable = input.bool(true, "Enable WIN Edit", group="🏷️ Labels • WIN EDIT")
+winXOffset = input.int(0, "WIN X Offset (bars)", minval=-500, maxval=500, group="🏷️ Labels • WIN EDIT")
+winYOffsetAtr = input.float(0.0, "WIN Y Offset (ATR)", step=0.1, group="🏷️ Labels • WIN EDIT")
+winAnchor = input.string("auto", "WIN Label Anchor", options=["auto","open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • WIN EDIT")
+winShowLine = input.bool(true, "WIN Connector Line", group="🏷️ Labels • WIN EDIT")
+winLineColor = input.color(color.new(#089981, 0), "WIN Line Color", group="🏷️ Labels • WIN EDIT")
+winLineWidth = input.int(1, "WIN Line Width", minval=1, maxval=5, group="🏷️ Labels • WIN EDIT")
+winLineStyle = input.string("solid", "WIN Line Style", options=["solid","dashed","dotted"], group="🏷️ Labels • WIN EDIT")
+winCandlePoint = input.string("close", "WIN Candle Point", options=["open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • WIN EDIT")
+
+// LOSS
+lossEditEnable = input.bool(true, "Enable LOSS Edit", group="🏷️ Labels • LOSS EDIT")
+lossXOffset = input.int(0, "LOSS X Offset (bars)", minval=-500, maxval=500, group="🏷️ Labels • LOSS EDIT")
+lossYOffsetAtr = input.float(0.0, "LOSS Y Offset (ATR)", step=0.1, group="🏷️ Labels • LOSS EDIT")
+lossAnchor = input.string("auto", "LOSS Label Anchor", options=["auto","open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • LOSS EDIT")
+lossShowLine = input.bool(true, "LOSS Connector Line", group="🏷️ Labels • LOSS EDIT")
+lossLineColor = input.color(color.new(#F23645, 0), "LOSS Line Color", group="🏷️ Labels • LOSS EDIT")
+lossLineWidth = input.int(1, "LOSS Line Width", minval=1, maxval=5, group="🏷️ Labels • LOSS EDIT")
+lossLineStyle = input.string("solid", "LOSS Line Style", options=["solid","dashed","dotted"], group="🏷️ Labels • LOSS EDIT")
+lossCandlePoint = input.string("close", "LOSS Candle Point", options=["open","high","low","close","hl2","hlc3","ohlc4"], group="🏷️ Labels • LOSS EDIT")
+
+///////////////////////////////////////////////////////////////////////////////
+// 6) PERFORMANCE TABLE CUSTOMIZATION
+///////////////////////////////////////////////////////////////////////////////
+showTable = input.bool(true, "Show Performance Table", group="📊 Performance Table")
+tablePos = input.string("top_right", "Table Position", options=["top_left", "top_center", "top_right", "middle_left", "middle_center", "middle_right", "bottom_left", "bottom_center", "bottom_right"], group="📊 Performance Table")
+tableHeaderBg = input.color(color.new(#2962FF, 50), "Header Background", group="📊 Performance Table")
+tableHeaderText = input.color(color.white, "Header Text Color", group="📊 Performance Table")
+tableCellBg = input.color(color.new(#1E222D, 0), "Cell Background", group="📊 Performance Table")
+tableCellText = input.color(color.new(#787B86, 0), "Cell Text Color", group="📊 Performance Table")
+tableLongBg = input.color(color.new(#089981, 80), "Long Position Background", group="📊 Performance Table")
+tableShortBg = input.color(color.new(#F23645, 80), "Short Position Background", group="📊 Performance Table")
+tableFlatBg = input.color(color.new(#787B86, 80), "Flat Position Background", group="📊 Performance Table")
+tableProfitBg = input.color(color.new(#089981, 80), "Profit Background", group="📊 Performance Table")
+tableLossBg = input.color(color.new(#F23645, 80), "Loss Background", group="📊 Performance Table")
+tableInfoBg = input.color(color.new(#2962FF, 80), "Info Background", group="📊 Performance Table")
+tableBorderWidth = input.int(1, "Border Width", minval=0, maxval=5, group="📊 Performance Table")
+tableBorderColor = input.color(color.new(#2962FF, 50), "Border Color", group="📊 Performance Table")
+tableFrameWidth = input.int(1, "Frame Width", minval=0, maxval=5, group="📊 Performance Table")
+tableFrameColor = input.color(color.new(#2962FF, 80), "Frame Color", group="📊 Performance Table")
+tableTextSize = input.string("small", "Table Text Size", options=["tiny", "small", "normal", "large", "huge"], group="📊 Performance Table")
+tableHeaderSize = input.string("normal", "Header Text Size", options=["tiny", "small", "normal", "large", "huge"], group="📊 Performance Table")
+tableTitle = input.string("OMNIA QUANTUM BTC CORE", "Table Title", group="📊 Performance Table")
+
+///////////////////////////////////////////////////////////////////////////////
+// 7) INDICATORS
+///////////////////////////////////////////////////////////////////////////////
+ema200_4h = request.security(syminfo.tickerid, "240", ta.ema(close, emaHTF), lookahead=barmerge.lookahead_off)
+highSwing = ta.pivothigh(high, swingLen, swingLen)
+lowSwing = ta.pivotlow(low, swingLen, swingLen)
+var float lastSwingHigh = na
+var float lastSwingLow = na
+if not na(highSwing)
+    lastSwingHigh := highSwing
+if not na(lowSwing)
+    lastSwingLow := lowSwing
+[plusDI, minusDI, adxVal] = ta.dmi(diLen, adxSmooth)
+volAvg = ta.sma(volume, volLen)
+rsiVal = ta.rsi(close, rsiLen)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+atr = ta.atr(atrLen)
+
+///////////////////////////////////////////////////////////////////////////////
+// 8) POSITION STATE & TRACKING
+///////////////////////////////////////////////////////////////////////////////
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+var float entryPrice = na
+var float initialRisk = na
+var float initialSL = na
+var float highWaterMark = na
+var float lowWaterMark = na
+var int barsSincePeak = 0
+var float maxRReached = 0.0
+var float closedEntryPrice = na
+var string exitLevel = ""
+var int entryBarIndex = 0
+
+if strategy.position_size == 0
+    entryPrice := na
+    initialRisk := na
+    initialSL := na
+    highWaterMark := na
+    lowWaterMark := na
+    barsSincePeak := 0
+    maxRReached := 0.0
+    exitLevel := ""
+else
+    if inLong
+        if na(highWaterMark) or high > highWaterMark
+            highWaterMark := high
+            barsSincePeak := 0
+        else
+            barsSincePeak += 1
+    if inShort
+        if na(lowWaterMark) or low < lowWaterMark
+            lowWaterMark := low
+            barsSincePeak := 0
+        else
+            barsSincePeak += 1
+
+///////////////////////////////////////////////////////////////////////////////
+// 9) ENTRY LOGIC
+///////////////////////////////////////////////////////////////////////////////
+trendLongOk = close > ema200_4h
+trendShortOk = close < ema200_4h
+structureBreakLong = not na(lastSwingHigh) and close > lastSwingHigh
+structureBreakShort = not na(lastSwingLow) and close < lastSwingLow
+adxOk = adxVal > adxMin
+volumeOk = volume > volAvg * volMult
+rsiLongOk = not useRSI or rsiVal < rsiOverbought
+rsiShortOk = not useRSI or rsiVal > rsiOversold
+emaLongOk = not useEMAFast or emaFast > emaSlow
+emaShortOk = not useEMAFast or emaFast < emaSlow
+
+newLong = inDateRange and trendLongOk and structureBreakLong and adxOk and volumeOk and rsiLongOk and emaLongOk and not inLong and not inShort
+newShort = inDateRange and trendShortOk and structureBreakShort and adxOk and volumeOk and rsiShortOk and emaShortOk and not inShort and not inLong
+
+///////////////////////////////////////////////////////////////////////////////
+// 10) ENTRIES
+///////////////////////////////////////////////////////////////////////////////
+if newLong
+    strategy.entry("LONG", strategy.long)
+    entryPrice := close
+    initialRisk := atr * atrSLMult
+    initialSL := close - initialRisk
+    highWaterMark := close
+    entryBarIndex := bar_index
+    alert(enterLongMsg, alert.freq_once_per_bar_close)
+
+if newShort
+    strategy.entry("SHORT", strategy.short)
+    entryPrice := close
+    initialRisk := atr * atrSLMult
+    initialSL := close + initialRisk
+    lowWaterMark := close
+    entryBarIndex := bar_index
+    alert(enterShortMsg, alert.freq_once_per_bar_close)
+
+if strategy.position_size > 0 and strategy.position_size[1] == 0
+    closedEntryPrice := strategy.opentrades.entry_price(0)
+if strategy.position_size < 0 and strategy.position_size[1] == 0
+    closedEntryPrice := strategy.opentrades.entry_price(0)
+
+///////////////////////////////////////////////////////////////////////////////
+// 11) 🚀 AGGRESSIVE TRAILING STOP LADDER MANAGEMENT
+///////////////////////////////////////////////////////////////////////////////
+var string currentLevel = "BASE"
+
+if not na(entryPrice) and not na(initialRisk) and initialRisk > 0
+    
+    if inLong
+        currentR = (close - entryPrice) / initialRisk
+        peakR = (highWaterMark - entryPrice) / initialRisk
+        
+        if peakR > maxRReached
+            maxRReached := peakR
+        
+        // Calculate trailing SL and determine current level
+        trailingSL = initialSL
+        
+        if peakR >= level4_r
+            trailingSL := entryPrice + (initialRisk * level3_r)
+            currentLevel := "TP4"
+        else if peakR >= level3_r
+            trailingSL := entryPrice + (initialRisk * level2_r)
+            currentLevel := "TP3"
+        else if peakR >= level2_r
+            trailingSL := entryPrice + (initialRisk * level1_r)
+            currentLevel := "TP2"
+        else if peakR >= level1_r
+            trailingSL := entryPrice
+            currentLevel := "TP1 (BE)"
+        else
+            trailingSL := initialSL
+            currentLevel := "BASE"
+        
+        strategy.exit("TRAIL-L", "LONG", stop=trailingSL)
+        
+        // Pullback exit
+        if not na(highWaterMark) and peakR >= level1_r
+            pullbackFromHigh = (highWaterMark - close) / highWaterMark * 100
+            if pullbackFromHigh >= pullbackPct and barsSincePeak >= pullbackBars
+                exitLevel := "PB"
+                strategy.close("LONG", comment="Pullback Exit")
+        
+        // ADX weakness exit
+        if useADXExit and currentR >= level2_r and adxVal < adxExitThreshold
+            exitLevel := "ADX"
+            strategy.close("LONG", comment="Weak ADX")
+    
+    if inShort
+        currentR = (entryPrice - close) / initialRisk
+        peakR = (entryPrice - lowWaterMark) / initialRisk
+        
+        if peakR > maxRReached
+            maxRReached := peakR
+        
+        // Calculate trailing SL and determine current level
+        trailingSL = initialSL
+        
+        if peakR >= level4_r
+            trailingSL := entryPrice - (initialRisk * level3_r)
+            currentLevel := "TP4"
+        else if peakR >= level3_r
+            trailingSL := entryPrice - (initialRisk * level2_r)
+            currentLevel := "TP3"
+        else if peakR >= level2_r
+            trailingSL := entryPrice - (initialRisk * level1_r)
+            currentLevel := "TP2"
+        else if peakR >= level1_r
+            trailingSL := entryPrice
+            currentLevel := "TP1 (BE)"
+        else
+            trailingSL := initialSL
+            currentLevel := "BASE"
+        
+        strategy.exit("TRAIL-S", "SHORT", stop=trailingSL)
+        
+        // Pullback exit
+        if not na(lowWaterMark) and peakR >= level1_r
+            pullbackFromLow = (close - lowWaterMark) / lowWaterMark * 100
+            if pullbackFromLow >= pullbackPct and barsSincePeak >= pullbackBars
+                exitLevel := "PB"
+                strategy.close("SHORT", comment="Pullback Exit")
+        
+        // ADX weakness exit
+        if useADXExit and currentR >= level2_r and adxVal < adxExitThreshold
+            exitLevel := "ADX"
+            strategy.close("SHORT", comment="Weak ADX")
+
+// Detect SL hit
+var float prevPosSize = 0.0
+if prevPosSize != 0 and strategy.position_size == 0 and exitLevel == ""
+    // Position closed by SL
+    if currentLevel == "BASE"
+        exitLevel := "BASE SL"
+    else if currentLevel == "TP1 (BE)"
+        exitLevel := "BE"
+    else if currentLevel == "TP2"
+        exitLevel := "TP1 SL"
+    else if currentLevel == "TP3"
+        exitLevel := "TP2 SL"
+    else if currentLevel == "TP4"
+        exitLevel := "TP3 SL"
+
+prevPosSize := strategy.position_size
+
+///////////////////////////////////////////////////////////////////////////////
+// 12) EXIT ALERTS
+///////////////////////////////////////////////////////////////////////////////
+posNow = strategy.position_size
+var float prevPos = 0.0
+justClosedLong = prevPos > 0 and posNow == 0
+justClosedShort = prevPos < 0 and posNow == 0
+if justClosedLong
+    alert(exitLongMsg, alert.freq_once_per_bar_close)
+if justClosedShort
+    alert(exitShortMsg, alert.freq_once_per_bar_close)
+prevPos := posNow
+
+///////////////////////////////////////////////////////////////////////////////
+// 13) PLOTS
+///////////////////////////////////////////////////////////////////////////////
+plot(showEMA ? ema200_4h : na, "HTF EMA", color=emaColor, linewidth=emaWidth)
+plot(showSwing and not na(lastSwingHigh) ? lastSwingHigh : na, "Swing High", color=swingColor, style=plot.style_linebr, linewidth=1)
+plot(showSwing and not na(lastSwingLow) ? lastSwingLow : na, "Swing Low", color=swingColor, style=plot.style_linebr, linewidth=1)
+plot(showFastEMA and useEMAFast ? emaFast : na, "Fast EMA", color=fastEMAColor, linewidth=1)
+plot(showFastEMA and useEMAFast ? emaSlow : na, "Slow EMA", color=slowEMAColor, linewidth=1)
+
+///////////////////////////////////////////////////////////////////////////////
+// 14) ENTRY/EXIT LABELS
+///////////////////////////////////////////////////////////////////////////////
+labelSizeMap = labelSize == "tiny" ? size.tiny : labelSize == "small" ? size.small : labelSize == "normal" ? size.normal : size.large
+
+if showLabels and newLong
+    _autoY = low
+    _lblY = buyEditEnable ? (f_priceFromAnchor(buyAnchor, _autoY) + (atr * buyYOffsetAtr)) : _autoY
+    _lblX = buyEditEnable ? (bar_index + buyXOffset) : bar_index
+    label.new(_lblX, _lblY, "BUY", color=buyLabelColor, textcolor=buyLabelText, style=label.style_label_up, size=labelSizeMap)
+    if buyEditEnable and buyShowLine
+        _ptY = f_priceFromAnchor(buyCandlePoint, low)
+        line.new(_lblX, _lblY, bar_index, _ptY, xloc=xloc.bar_index, extend=extend.none, color=buyLineColor, width=buyLineWidth, style=f_lineStyle(buyLineStyle))
+
+if showLabels and newShort
+    _autoY = high
+    _lblY = sellEditEnable ? (f_priceFromAnchor(sellAnchor, _autoY) + (atr * sellYOffsetAtr)) : _autoY
+    _lblX = sellEditEnable ? (bar_index + sellXOffset) : bar_index
+    label.new(_lblX, _lblY, "SELL", color=sellLabelColor, textcolor=sellLabelText, style=label.style_label_down, size=labelSizeMap)
+    if sellEditEnable and sellShowLine
+        _ptY = f_priceFromAnchor(sellCandlePoint, high)
+        line.new(_lblX, _lblY, bar_index, _ptY, xloc=xloc.bar_index, extend=extend.none, color=sellLineColor, width=sellLineWidth, style=f_lineStyle(sellLineStyle))
+
+if showLabels and justClosedLong
+    pnlPct = not na(closedEntryPrice) and closedEntryPrice != 0 ? (close - closedEntryPrice) / closedEntryPrice * 100 : 0
+    tradePnL = not na(closedEntryPrice) ? (close - closedEntryPrice) * math.abs(strategy.position_size[1]) : 0
+    isWin = tradePnL >= 0
+    labelText = (isWin ? "WIN " : "LOSS ") + exitLevel + "\n" + str.tostring(pnlPct, "#.##") + "%\n$" + str.tostring(tradePnL, "#.##")
+    labelColor = isWin ? winLabelColor : lossLabelColor
+    labelTextColor = isWin ? winLabelText : lossLabelText
+    
+    _autoY = high
+    _useEdit = isWin ? winEditEnable : lossEditEnable
+    _xOff = isWin ? winXOffset : lossXOffset
+    _yOff = isWin ? winYOffsetAtr : lossYOffsetAtr
+    _anch = isWin ? winAnchor : lossAnchor
+    _showLn = isWin ? winShowLine : lossShowLine
+    _lnCol = isWin ? winLineColor : lossLineColor
+    _lnW = isWin ? winLineWidth : lossLineWidth
+    _lnSt = isWin ? winLineStyle : lossLineStyle
+    _ptSel = isWin ? winCandlePoint : lossCandlePoint
+    
+    _lblY = _useEdit ? (f_priceFromAnchor(_anch, _autoY) + (atr * _yOff)) : _autoY
+    _lblX = _useEdit ? (bar_index + _xOff) : bar_index
+    
+    label.new(_lblX, _lblY, labelText, color=labelColor, textcolor=labelTextColor, style=label.style_label_down, size=labelSizeMap)
+    if _useEdit and _showLn
+        _ptY = f_priceFromAnchor(_ptSel, close)
+        line.new(_lblX, _lblY, bar_index, _ptY, xloc=xloc.bar_index, extend=extend.none, color=_lnCol, width=_lnW, style=f_lineStyle(_lnSt))
+    
+    // Background box
+    if showBackgroundBox
+        boxColor = isWin ? winBoxColor : lossBoxColor
+        box.new(entryBarIndex, high, bar_index, low, border_color=color.new(labelColor, 50), bgcolor=boxColor, border_width=1)
+
+if showLabels and justClosedShort
+    pnlPct = not na(closedEntryPrice) and closedEntryPrice != 0 ? (closedEntryPrice - close) / closedEntryPrice * 100 : 0
+    tradePnL = not na(closedEntryPrice) ? (closedEntryPrice - close) * math.abs(strategy.position_size[1]) : 0
+    isWin = tradePnL >= 0
+    labelText = (isWin ? "WIN " : "LOSS ") + exitLevel + "\n" + str.tostring(pnlPct, "#.##") + "%\n$" + str.tostring(tradePnL, "#.##")
+    labelColor = isWin ? winLabelColor : lossLabelColor
+    labelTextColor = isWin ? winLabelText : lossLabelText
+    
+    // ✅ WIN su SHORT in alto, LOSS resta in basso
+    _autoY = isWin ? high : low
+    _useEdit = isWin ? winEditEnable : lossEditEnable
+    _xOff = isWin ? winXOffset : lossXOffset
+    _yOff = isWin ? winYOffsetAtr : lossYOffsetAtr
+    _anch = isWin ? winAnchor : lossAnchor
+    _showLn = isWin ? winShowLine : lossShowLine
+    _lnCol = isWin ? winLineColor : lossLineColor
+    _lnW = isWin ? winLineWidth : lossLineWidth
+    _lnSt = isWin ? winLineStyle : lossLineStyle
+    _ptSel = isWin ? winCandlePoint : lossCandlePoint
+    
+    _lblY = _useEdit ? (f_priceFromAnchor(_anch, _autoY) + (atr * _yOff)) : _autoY
+    _lblX = _useEdit ? (bar_index + _xOff) : bar_index
+    
+    _lblStyle = isWin ? label.style_label_down : label.style_label_up
+    label.new(_lblX, _lblY, labelText, color=labelColor, textcolor=labelTextColor, style=_lblStyle, size=labelSizeMap)
+    if _useEdit and _showLn
+        _ptY = f_priceFromAnchor(_ptSel, close)
+        line.new(_lblX, _lblY, bar_index, _ptY, xloc=xloc.bar_index, extend=extend.none, color=_lnCol, width=_lnW, style=f_lineStyle(_lnSt))
+    
+    // Background box
+    if showBackgroundBox
+        boxColor = isWin ? winBoxColor : lossBoxColor
+        box.new(entryBarIndex, high, bar_index, low, border_color=color.new(labelColor, 50), bgcolor=boxColor, border_width=1)
+
+///////////////////////////////////////////////////////////////////////////////
+// 15) PERFORMANCE TABLE
+///////////////////////////////////////////////////////////////////////////////
+if showTable
+    tablePosMap = tablePos == "top_left" ? position.top_left : tablePos == "top_center" ? position.top_center : tablePos == "top_right" ? position.top_right : tablePos == "middle_left" ? position.middle_left : tablePos == "middle_center" ? position.middle_center : tablePos == "middle_right" ? position.middle_right : tablePos == "bottom_left" ? position.bottom_left : tablePos == "bottom_center" ? position.bottom_center : position.bottom_right
+    
+    textSizeMap = tableTextSize == "tiny" ? size.tiny : tableTextSize == "small" ? size.small : tableTextSize == "normal" ? size.normal : tableTextSize == "large" ? size.large : size.huge
+    headerSizeMap = tableHeaderSize == "tiny" ? size.tiny : tableHeaderSize == "small" ? size.small : tableHeaderSize == "normal" ? size.normal : tableHeaderSize == "large" ? size.large : size.huge
+    
+    var table perfTable = table.new(tablePosMap, 2, 10, border_width=tableBorderWidth, border_color=tableBorderColor, frame_color=tableFrameColor, frame_width=tableFrameWidth)
+    
+    if barstate.islast
+        status = strategy.position_size > 0 ? "LONG • " + currentLevel : strategy.position_size < 0 ? "SHORT • " + currentLevel : "FLAT"
+        statusColor = strategy.position_size > 0 ? tableLongBg : strategy.position_size < 0 ? tableShortBg : tableFlatBg
+        
+        currentPnL = strategy.openprofit
+        currentPnLPct = not na(entryPrice) and entryPrice != 0 and strategy.position_size != 0 ? (close - entryPrice) / entryPrice * 100 * math.sign(strategy.position_size) : 0
+        
+        // Calculate distance to next level and SL
+        distanceToNext = ""
+        distanceToSL = ""
+        
+        if strategy.position_size != 0 and not na(entryPrice) and not na(initialRisk)
+            if inLong
+                currentR = (close - entryPrice) / initialRisk
+                peakR = (highWaterMark - entryPrice) / initialRisk
+                
+                // Next level target
+                nextLevel = peakR >= level4_r ? na :
+                           peakR >= level3_r ? entryPrice + (initialRisk * level4_r) :
+                           peakR >= level2_r ? entryPrice + (initialRisk * level3_r) :
+                           peakR >= level1_r ? entryPrice + (initialRisk * level2_r) :
+                           entryPrice + (initialRisk * level1_r)
+                
+                if not na(nextLevel)
+                    distToNext = nextLevel - close
+                    distToNextPct = (distToNext / close) * 100
+                    distanceToNext := "↑ " + str.tostring(distToNext, "#.##") + " (" + str.tostring(distToNextPct, "#.##") + "%)"
+                else
+                    distanceToNext := "MAX LEVEL"
+                
+                // SL distance
+                currentSL = peakR >= level4_r ? entryPrice + (initialRisk * level3_r) :
+                           peakR >= level3_r ? entryPrice + (initialRisk * level2_r) :
+                           peakR >= level2_r ? entryPrice + (initialRisk * level1_r) :
+                           peakR >= level1_r ? entryPrice : initialSL
+                
+                distToSL = close - currentSL
+                distToSLPct = (distToSL / close) * 100
+                distanceToSL := "↓ " + str.tostring(distToSL, "#.##") + " (" + str.tostring(distToSLPct, "#.##") + "%)"
+            
+            if inShort
+                currentR = (entryPrice - close) / initialRisk
+                peakR = (entryPrice - lowWaterMark) / initialRisk
+                
+                // Next level target
+                nextLevel = peakR >= level4_r ? na :
+                           peakR >= level3_r ? entryPrice - (initialRisk * level4_r) :
+                           peakR >= level2_r ? entryPrice - (initialRisk * level3_r) :
+                           peakR >= level1_r ? entryPrice - (initialRisk * level2_r) :
+                           entryPrice - (initialRisk * level1_r)
+                
+                if not na(nextLevel)
+                    distToNext = close - nextLevel
+                    distToNextPct = (distToNext / close) * 100
+                    distanceToNext := "↓ " + str.tostring(distToNext, "#.##") + " (" + str.tostring(distToNextPct, "#.##") + "%)"
+                else
+                    distanceToNext := "MAX LEVEL"
+                
+                // SL distance
+                currentSL = peakR >= level4_r ? entryPrice - (initialRisk * level3_r) :
+                           peakR >= level3_r ? entryPrice - (initialRisk * level2_r) :
+                           peakR >= level2_r ? entryPrice - (initialRisk * level1_r) :
+                           peakR >= level1_r ? entryPrice : initialSL
+                
+                distToSL = currentSL - close
+                distToSLPct = (distToSL / close) * 100
+                distanceToSL := "↑ " + str.tostring(distToSL, "#.##") + " (" + str.tostring(distToSLPct, "#.##") + "%)"
+        
+        netPnL = strategy.netprofit
+        totalTrades = strategy.closedtrades
+        winTrades = strategy.wintrades
+        winRate = totalTrades > 0 ? winTrades / totalTrades * 100 : 0
+        
+        startTimestamp = timestamp(startYear, startMonth, startDay, 0, 0)
+        currentTimestamp = time
+        daysElapsed = (currentTimestamp - startTimestamp) / (1000 * 60 * 60 * 24)
+        weeksElapsed = daysElapsed / 7
+        avgWeeklyTrades = weeksElapsed > 0 ? totalTrades / weeksElapsed : 0
+        
+        initialCapital = strategy.initial_capital
+        currentCapital = strategy.initial_capital + strategy.netprofit + strategy.openprofit
+        capitalChange = currentCapital - initialCapital
+        capitalChangePct = initialCapital > 0 ? (capitalChange / initialCapital) * 100 : 0
+        
+        maxDD = strategy.max_drawdown
+        maxDDpct = math.abs(maxDD)
+        ddColor = maxDDpct < 5 ? color.new(#089981, 80) : maxDDpct < 10 ? color.new(#FFA726, 80) : maxDDpct < 15 ? color.new(#FF6D00, 80) : color.new(#F23645, 80)
+        
+        // Header
+        table.cell(perfTable, 0, 0, tableTitle, text_color=tableHeaderText, bgcolor=tableHeaderBg, text_size=headerSizeMap)
+        table.merge_cells(perfTable, 0, 0, 1, 0)
+        
+        // Status
+        table.cell(perfTable, 0, 1, "STATUS", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        table.cell(perfTable, 1, 1, status, text_color=color.white, bgcolor=statusColor, text_size=textSizeMap)
+        
+        // Current P&L
+        table.cell(perfTable, 0, 2, "CURRENT P&L", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        pnlColor = currentPnL >= 0 ? tableProfitBg : tableLossBg
+        table.cell(perfTable, 1, 2, str.tostring(currentPnLPct, "#.##") + "% ($" + str.tostring(currentPnL, "#.##") + ")", text_color=color.white, bgcolor=pnlColor, text_size=textSizeMap)
+        
+        // Distance to Next Level / SL
+        table.cell(perfTable, 0, 3, "NEXT ↑ / SL ↓", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        distanceText = strategy.position_size != 0 ? distanceToNext + " / " + distanceToSL : "—"
+        table.cell(perfTable, 1, 3, distanceText, text_color=color.white, bgcolor=tableInfoBg, text_size=textSizeMap)
+        
+        // Net P&L
+        table.cell(perfTable, 0, 4, "NET P&L", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        netColor = netPnL >= 0 ? tableProfitBg : tableLossBg
+        table.cell(perfTable, 1, 4, "$" + str.tostring(netPnL, "#.##"), text_color=color.white, bgcolor=netColor, text_size=textSizeMap)
+        
+        // Capital
+        table.cell(perfTable, 0, 5, "CAPITAL (Δ%)", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        capitalColor = capitalChange >= 0 ? tableProfitBg : tableLossBg
+        table.cell(perfTable, 1, 5, "$" + str.tostring(initialCapital, "#.##") + " → $" + str.tostring(currentCapital, "#.##") + " (" + str.tostring(capitalChangePct, "#.##") + "%)", text_color=color.white, bgcolor=capitalColor, text_size=textSizeMap)
+        
+        // Win Rate
+        table.cell(perfTable, 0, 6, "WIN RATE %", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        table.cell(perfTable, 1, 6, str.tostring(winRate, "#.##") + "%", text_color=color.white, bgcolor=tableInfoBg, text_size=textSizeMap)
+        
+        // Avg Weekly Trades
+        table.cell(perfTable, 0, 7, "AVG WEEKLY TRADES", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        table.cell(perfTable, 1, 7, str.tostring(avgWeeklyTrades, "#.##"), text_color=color.white, bgcolor=tableInfoBg, text_size=textSizeMap)
+        
+        // Max DD
+        table.cell(perfTable, 0, 8, "MAX DD", text_color=tableCellText, bgcolor=tableCellBg, text_size=textSizeMap)
+        table.cell(perfTable, 1, 8, str.tostring(maxDD, "#.##") + "%", text_color=color.white, bgcolor=ddColor, text_size=textSizeMap)
+
+///////////////////////////////////////////////////////////////////////////////
+// 16) DYNAMIC TRADE LINES (ENTRY / SL / TP LEVELS)
+///////////////////////////////////////////////////////////////////////////////
+showTradeLines = input.bool(true, "Show Trade Lines (Entry/SL/TP)", group="📈 Dynamic Lines")
+linesExtendRight = input.bool(true, "Extend Lines Right", group="📈 Dynamic Lines")
+lineWidth = input.int(2, "Line Width", minval=1, maxval=4, group="📈 Dynamic Lines")
+
+colEntry = input.color(color.new(#2962FF, 70), "Entry Line Color", group="📈 Dynamic Lines")
+colBaseSL = input.color(color.new(#F23645, 70), "Base SL Color", group="📈 Dynamic Lines")
+colTP1 = input.color(color.new(#089981, 75), "TP1 (BE) Color", group="📈 Dynamic Lines")
+colTP2 = input.color(color.new(#00BCD4, 75), "TP2 Color", group="📈 Dynamic Lines")
+colTP3 = input.color(color.new(#4CAF50, 75), "TP3 Color", group="📈 Dynamic Lines")
+colTP4 = input.color(color.new(#8BC34A, 75), "TP4 Color", group="📈 Dynamic Lines")
+colCurrentSL = input.color(color.new(#FF9800, 60), "Current SL Color", group="📈 Dynamic Lines")
+
+ext = linesExtendRight ? extend.right : extend.none
+
+// Persistent line objects
+var line entryLine = na
+var label entryLab = na
+var line baseSLLine = na
+var label baseSLLab = na
+var line tp1Line = na
+var label tp1Lab = na
+var line tp2Line = na
+var label tp2Lab = na
+var line tp3Line = na
+var label tp3Lab = na
+var line tp4Line = na
+var label tp4Lab = na
+var line currentSLLine = na
+var label currentSLLab = na
+
+// Track line bar index
+var int entryLineBar = na
+var int baseSLLineBar = na
+var int tp1LineBar = na
+var int tp2LineBar = na
+var int tp3LineBar = na
+var int tp4LineBar = na
+var int currentSLLineBar = na
+
+// Clear lines when no position
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    if not na(entryLine)
+        line.delete(entryLine)
+        entryLine := na
+        entryLineBar := na
+    if not na(entryLab)
+        label.delete(entryLab)
+        entryLab := na
+    if not na(baseSLLine)
+        line.delete(baseSLLine)
+        baseSLLine := na
+        baseSLLineBar := na
+    if not na(baseSLLab)
+        label.delete(baseSLLab)
+        baseSLLab := na
+    if not na(tp1Line)
+        line.delete(tp1Line)
+        tp1Line := na
+        tp1LineBar := na
+    if not na(tp1Lab)
+        label.delete(tp1Lab)
+        tp1Lab := na
+    if not na(tp2Line)
+        line.delete(tp2Line)
+        tp2Line := na
+        tp2LineBar := na
+    if not na(tp2Lab)
+        label.delete(tp2Lab)
+        tp2Lab := na
+    if not na(tp3Line)
+        line.delete(tp3Line)
+        tp3Line := na
+        tp3LineBar := na
+    if not na(tp3Lab)
+        label.delete(tp3Lab)
+        tp3Lab := na
+    if not na(tp4Line)
+        line.delete(tp4Line)
+        tp4Line := na
+        tp4LineBar := na
+    if not na(tp4Lab)
+        label.delete(tp4Lab)
+        tp4Lab := na
+    if not na(currentSLLine)
+        line.delete(currentSLLine)
+        currentSLLine := na
+        currentSLLineBar := na
+    if not na(currentSLLab)
+        label.delete(currentSLLab)
+        currentSLLab := na
+
+// Update lines when in position
+if showTradeLines and strategy.position_size != 0 and not na(entryPrice) and not na(initialRisk)
+    
+    if inLong
+        // Entry line
+        if na(entryLine)
+            entryLine := line.new(entryBarIndex, entryPrice, bar_index, entryPrice, xloc=xloc.bar_index, extend=ext, color=colEntry, style=line.style_solid, width=lineWidth)
+            entryLineBar := entryBarIndex
+            entryLab := label.new(bar_index, entryPrice, "ENTRY: " + str.tostring(entryPrice, "#.##"), xloc=xloc.bar_index, color=colEntry, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(entryLine, bar_index, entryPrice)
+            label.set_xy(entryLab, bar_index, entryPrice)
+        
+        // Base SL
+        if na(baseSLLine)
+            baseSLLine := line.new(entryBarIndex, initialSL, bar_index, initialSL, xloc=xloc.bar_index, extend=ext, color=colBaseSL, style=line.style_dashed, width=lineWidth)
+            baseSLLineBar := entryBarIndex
+            baseSLLab := label.new(bar_index, initialSL, "BASE SL: " + str.tostring(initialSL, "#.##"), xloc=xloc.bar_index, color=colBaseSL, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(baseSLLine, bar_index, initialSL)
+            label.set_xy(baseSLLab, bar_index, initialSL)
+        
+        // TP Levels
+        tp1Price = entryPrice + (initialRisk * level1_r)
+        if na(tp1Line)
+            tp1Line := line.new(entryBarIndex, tp1Price, bar_index, tp1Price, xloc=xloc.bar_index, extend=ext, color=colTP1, style=line.style_dotted, width=lineWidth)
+            tp1LineBar := entryBarIndex
+            tp1Lab := label.new(bar_index, tp1Price, "TP1 (BE) " + str.tostring(level1_r, "#.#") + "R: " + str.tostring(tp1Price, "#.##"), xloc=xloc.bar_index, color=colTP1, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp1Line, bar_index, tp1Price)
+            label.set_xy(tp1Lab, bar_index, tp1Price)
+        
+        tp2Price = entryPrice + (initialRisk * level2_r)
+        if na(tp2Line)
+            tp2Line := line.new(entryBarIndex, tp2Price, bar_index, tp2Price, xloc=xloc.bar_index, extend=ext, color=colTP2, style=line.style_dotted, width=lineWidth)
+            tp2LineBar := entryBarIndex
+            tp2Lab := label.new(bar_index, tp2Price, "TP2 " + str.tostring(level2_r, "#.#") + "R: " + str.tostring(tp2Price, "#.##"), xloc=xloc.bar_index, color=colTP2, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp2Line, bar_index, tp2Price)
+            label.set_xy(tp2Lab, bar_index, tp2Price)
+        
+        tp3Price = entryPrice + (initialRisk * level3_r)
+        if na(tp3Line)
+            tp3Line := line.new(entryBarIndex, tp3Price, bar_index, tp3Price, xloc=xloc.bar_index, extend=ext, color=colTP3, style=line.style_dotted, width=lineWidth)
+            tp3LineBar := entryBarIndex
+            tp3Lab := label.new(bar_index, tp3Price, "TP3 " + str.tostring(level3_r, "#.#") + "R: " + str.tostring(tp3Price, "#.##"), xloc=xloc.bar_index, color=colTP3, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp3Line, bar_index, tp3Price)
+            label.set_xy(tp3Lab, bar_index, tp3Price)
+        
+        tp4Price = entryPrice + (initialRisk * level4_r)
+        if na(tp4Line)
+            tp4Line := line.new(entryBarIndex, tp4Price, bar_index, tp4Price, xloc=xloc.bar_index, extend=ext, color=colTP4, style=line.style_dotted, width=lineWidth)
+            tp4LineBar := entryBarIndex
+            tp4Lab := label.new(bar_index, tp4Price, "TP4 " + str.tostring(level4_r, "#.#") + "R: " + str.tostring(tp4Price, "#.##"), xloc=xloc.bar_index, color=colTP4, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp4Line, bar_index, tp4Price)
+            label.set_xy(tp4Lab, bar_index, tp4Price)
+        
+        // Current trailing SL
+        peakR = (highWaterMark - entryPrice) / initialRisk
+        currentSL = peakR >= level4_r ? entryPrice + (initialRisk * level3_r) :
+                   peakR >= level3_r ? entryPrice + (initialRisk * level2_r) :
+                   peakR >= level2_r ? entryPrice + (initialRisk * level1_r) :
+                   peakR >= level1_r ? entryPrice : initialSL
+        
+        if currentSL != initialSL
+            if na(currentSLLine)
+                currentSLLine := line.new(entryBarIndex, currentSL, bar_index, currentSL, xloc=xloc.bar_index, extend=ext, color=colCurrentSL, style=line.style_solid, width=lineWidth)
+                currentSLLineBar := entryBarIndex
+                currentSLLab := label.new(bar_index, currentSL, "CURRENT SL: " + str.tostring(currentSL, "#.##"), xloc=xloc.bar_index, color=colCurrentSL, textcolor=color.white, style=label.style_label_left, size=size.small)
+            else
+                line.set_xy2(currentSLLine, bar_index, currentSL)
+                label.set_xy(currentSLLab, bar_index, currentSL)
+                label.set_text(currentSLLab, "CURRENT SL: " + str.tostring(currentSL, "#.##"))
+        else
+            if not na(currentSLLine)
+                line.delete(currentSLLine)
+                currentSLLine := na
+                currentSLLineBar := na
+            if not na(currentSLLab)
+                label.delete(currentSLLab)
+                currentSLLab := na
+    
+    if inShort
+        // Entry line
+        if na(entryLine)
+            entryLine := line.new(entryBarIndex, entryPrice, bar_index, entryPrice, xloc=xloc.bar_index, extend=ext, color=colEntry, style=line.style_solid, width=lineWidth)
+            entryLineBar := entryBarIndex
+            entryLab := label.new(bar_index, entryPrice, "ENTRY: " + str.tostring(entryPrice, "#.##"), xloc=xloc.bar_index, color=colEntry, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(entryLine, bar_index, entryPrice)
+            label.set_xy(entryLab, bar_index, entryPrice)
+        
+        // Base SL
+        if na(baseSLLine)
+            baseSLLine := line.new(entryBarIndex, initialSL, bar_index, initialSL, xloc=xloc.bar_index, extend=ext, color=colBaseSL, style=line.style_dashed, width=lineWidth)
+            baseSLLineBar := entryBarIndex
+            baseSLLab := label.new(bar_index, initialSL, "BASE SL: " + str.tostring(initialSL, "#.##"), xloc=xloc.bar_index, color=colBaseSL, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(baseSLLine, bar_index, initialSL)
+            label.set_xy(baseSLLab, bar_index, initialSL)
+        
+        // TP Levels
+        tp1Price = entryPrice - (initialRisk * level1_r)
+        if na(tp1Line)
+            tp1Line := line.new(entryBarIndex, tp1Price, bar_index, tp1Price, xloc=xloc.bar_index, extend=ext, color=colTP1, style=line.style_dotted, width=lineWidth)
+            tp1LineBar := entryBarIndex
+            tp1Lab := label.new(bar_index, tp1Price, "TP1 (BE) " + str.tostring(level1_r, "#.#") + "R: " + str.tostring(tp1Price, "#.##"), xloc=xloc.bar_index, color=colTP1, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp1Line, bar_index, tp1Price)
+            label.set_xy(tp1Lab, bar_index, tp1Price)
+        
+        tp2Price = entryPrice - (initialRisk * level2_r)
+        if na(tp2Line)
+            tp2Line := line.new(entryBarIndex, tp2Price, bar_index, tp2Price, xloc=xloc.bar_index, extend=ext, color=colTP2, style=line.style_dotted, width=lineWidth)
+            tp2LineBar := entryBarIndex
+            tp2Lab := label.new(bar_index, tp2Price, "TP2 " + str.tostring(level2_r, "#.#") + "R: " + str.tostring(tp2Price, "#.##"), xloc=xloc.bar_index, color=colTP2, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp2Line, bar_index, tp2Price)
+            label.set_xy(tp2Lab, bar_index, tp2Price)
+        
+        tp3Price = entryPrice - (initialRisk * level3_r)
+        if na(tp3Line)
+            tp3Line := line.new(entryBarIndex, tp3Price, bar_index, tp3Price, xloc=xloc.bar_index, extend=ext, color=colTP3, style=line.style_dotted, width=lineWidth)
+            tp3LineBar := entryBarIndex
+            tp3Lab := label.new(bar_index, tp3Price, "TP3 " + str.tostring(level3_r, "#.#") + "R: " + str.tostring(tp3Price, "#.##"), xloc=xloc.bar_index, color=colTP3, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp3Line, bar_index, tp3Price)
+            label.set_xy(tp3Lab, bar_index, tp3Price)
+        
+        tp4Price = entryPrice - (initialRisk * level4_r)
+        if na(tp4Line)
+            tp4Line := line.new(entryBarIndex, tp4Price, bar_index, tp4Price, xloc=xloc.bar_index, extend=ext, color=colTP4, style=line.style_dotted, width=lineWidth)
+            tp4LineBar := entryBarIndex
+            tp4Lab := label.new(bar_index, tp4Price, "TP4 " + str.tostring(level4_r, "#.#") + "R: " + str.tostring(tp4Price, "#.##"), xloc=xloc.bar_index, color=colTP4, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            line.set_xy2(tp4Line, bar_index, tp4Price)
+            label.set_xy(tp4Lab, bar_index, tp4Price)
+        
+        // Current trailing SL
+        peakR = (entryPrice - lowWaterMark) / initialRisk
+        currentSL = peakR >= level4_r ? entryPrice - (initialRisk * level3_r) :
+                   peakR >= level3_r ? entryPrice - (initialRisk * level2_r) :
+                   peakR >= level2_r ? entryPrice - (initialRisk * level1_r) :
+                   peakR >= level1_r ? entryPrice : initialSL
+        
+        if currentSL != initialSL
+            if na(currentSLLine)
+                currentSLLine := line.new(entryBarIndex, currentSL, bar_index, currentSL, xloc=xloc.bar_index, extend=ext, color=colCurrentSL, style=line.style_solid, width=lineWidth)
+                currentSLLineBar := entryBarIndex
+                currentSLLab := label.new(bar_index, currentSL, "CURRENT SL: " + str.tostring(currentSL, "#.##"), xloc=xloc.bar_index, color=colCurrentSL, textcolor=color.white, style=label.style_label_left, size=size.small)
+            else
+                line.set_xy2(currentSLLine, bar_index, currentSL)
+                label.set_xy(currentSLLab, bar_index, currentSL)
+                label.set_text(currentSLLab, "CURRENT SL: " + str.tostring(currentSL, "#.##"))
+        else
+            if not na(currentSLLine)
+                line.delete(currentSLLine)
+                currentSLLine := na
+                currentSLLineBar := na
+            if not na(currentSLLab)
+                label.delete(currentSLLab)
+                currentSLLab := na
